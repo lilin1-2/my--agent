@@ -13,6 +13,7 @@ AI 调用服务 —— 模块化 Agent 工具调度平台
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import requests
 import json
@@ -187,6 +188,13 @@ app = FastAPI(
     title="多功能 Agent 助手",
     description="集成时间、计算器、天气查询的 Agent，手写 Tool Calling + SSE 流式 + API 认证",
     version="2.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
