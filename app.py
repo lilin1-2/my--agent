@@ -7,16 +7,19 @@ AI 调用服务 —— 模块化 Agent 工具调度平台
 接口：
   GET  /health      健康检查
   GET  /tools       查看可用工具列表
-  POST /chat        非流式对话
-  POST /chat/stream SSE 流式对话
+  POST /chat        非流式对话（需 X-API-Key）
+  POST /chat/stream SSE 流式对话（需 X-API-Key）
 """
 
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import requests
 import json
 import datetime
+import asyncio
+
+# 日志
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
+# 环境变量
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -63,13 +66,12 @@ def get_weather(city: str) -> str:
         resp.raise_for_status()
         data = resp.json()
         current = data["current_condition"][0]
-        weather_info = {
+        return json.dumps({
             "city": city,
             "temperature": f"{current['temp_C']}°C",
             "condition": current["weatherDesc"][0]["value"],
             "humidity": f"{current['humidity']}%",
-        }
-        return json.dumps(weather_info, ensure_ascii=False)
+        }, ensure_ascii=False)
     except requests.exceptions.Timeout:
         return json.dumps({"error": f"查询 {city} 天气超时"}, ensure_ascii=False)
     except requests.exceptions.HTTPError:
@@ -95,10 +97,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "数学表达式，如 '100+200'",
-                    }
+                    "expression": {"type": "string", "description": "数学表达式，如 '100+200'"}
                 },
                 "required": ["expression"],
             }
@@ -112,10 +111,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "city": {
-                        "type": "string",
-                        "description": "城市名称（中文）",
-                    }
+                    "city": {"type": "string", "description": "城市名称（中文）"}
                 },
                 "required": ["city"],
             }
@@ -173,29 +169,24 @@ def call_llm_with_tools(messages: list) -> str:
 
 
 # ============================================================
+# API 认证
+# ============================================================
+
+def verify_api_key(x_api_key: str = Header(None)):
+    """请求头必须带 X-API-Key，对不上返回 401"""
+    if not x_api_key or x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="API Key 无效或缺失")
+    return True
+
+
+# ============================================================
 # FastAPI 应用
 # ============================================================
 
-from fastapi import Depends, HTTPException
-
-def verify_api_key(x_api_key: str = None):
-    """API Key 认证：请求头必须带 X-API-Key"""
-    if not x_api_key or x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="API Key 无效或缺失")
-    return True
-
-from fastapi import Depends, HTTPException
-
-def verify_api_key(x_api_key: str = None):
-    """API Key 认证：请求头必须带 X-API-Key"""
-    if not x_api_key or x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="API Key 无效或缺失")
-    return True
-
 app = FastAPI(
     title="多功能 Agent 助手",
-    description="集成时间、计算器、天气查询的智能 Agent，手写 Tool Calling + SSE 流式",
-    version="1.0.0",
+    description="集成时间、计算器、天气查询的 Agent，手写 Tool Calling + SSE 流式 + API 认证",
+    version="2.0.0",
 )
 
 
@@ -227,6 +218,7 @@ def chat(request: ChatRequest):
     try:
         reply = call_llm_with_tools(messages)
     except Exception as e:
+        logger.error(f"LLM 调用失败: {e}")
         raise HTTPException(status_code=502, detail=f"LLM 调用失败：{e}")
 
     return ChatResponse(reply=reply, history=messages)
@@ -252,10 +244,10 @@ async def chat_stream(request: ChatRequest):
             for char in reply:
                 chunk = json.dumps({"type": "text", "content": char}, ensure_ascii=False)
                 yield f"data: {chunk}\n\n"
-                import asyncio
                 await asyncio.sleep(0.02)
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
+            logger.error(f"流式生成失败: {e}")
             error_chunk = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
             yield f"data: {error_chunk}\n\n"
 
@@ -286,4 +278,5 @@ def global_exception(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
+    logger.info("服务启动")
     uvicorn.run(app, host="127.0.0.1", port=8000)
